@@ -14,6 +14,10 @@ from toggl import utils, exceptions
 logger = logging.getLogger('toggl.api.models')
 
 
+_T = typing.TypeVar("_T")
+ValueOrCollection = typing.Union[typing.Collection[_T], _T]
+
+
 # Organization entity
 class Organization(base.TogglEntity):
     _endpoints_name = "organizations"
@@ -713,7 +717,23 @@ class TimeEntrySet(base.WorkspacedTogglSet):
 
         return self.entity_cls.deserialize(config=config, **fetched_entity)
 
-    def _prepare_reports_request(self, start, stop, first_row_number, wid):  # type: (datetime.datetime, datetime.datetime, int, int) -> (str, typing.Dict[str, typing.Any])
+    def _prepare_reports_request(
+        self,
+        start,
+        stop,
+        first_row_number,
+        wid,
+        clients=None,
+        projects=None,
+        users=None,
+        tags=None,
+        tasks=None,
+        time_entries=None,
+        description=None,
+        rounding=None,
+        order_by=None,
+        order_direction=None,
+    ):  # type: (datetime.datetime, datetime.datetime, int, int, typing.Optional[ValueOrCollection[typing.Union[Client, int]]], typing.Optional[ValueOrCollection[typing.Union[Project, int]]], typing.Optional[ValueOrCollection[typing.Union[User, int]]], typing.Optional[ValueOrCollection[typing.Union[Tag, int]]], typing.Optional[ValueOrCollection[typing.Union[Task, int]]], typing.Optional[ValueOrCollection[typing.Union["TimeEntry", int]]], typing.Optional[str], typing.Optional[bool], typing.Optional[typing.Literal["date", "user", "duration", "description", "last_update"]], typing.Optional[typing.Literal["asc", "desc", "ASC", "DESC"]]) -> (str, typing.Dict[str, typing.Any])
         url = f'/workspace/{wid}/search/time_entries'
 
         data = {
@@ -723,6 +743,40 @@ class TimeEntrySet(base.WorkspacedTogglSet):
             data['start_date'] = start.date().isoformat()
         if stop is not None:
             data['end_date'] = stop.date().isoformat()
+
+        def get_ids(entities):  # type: (ValueOrCollection[typing.Union[base.Entity, int]]) -> typing.List[int]
+            if isinstance(entities, (base.TogglEntity, int)):
+                entities = [entities]
+            elif not isinstance(entities, typing.Collection):
+                raise ValueError("Filtering entities must be one or more of entities or ids")
+            ids = []
+            for element in entities:
+                if not isinstance(element, (base.TogglEntity, int)):
+                    raise ValueError("Filtering entities must be one or more of entities or ids")
+                ids.append(element.id if isinstance(element, base.TogglEntity) else element)
+            return ids
+
+        if clients is not None:
+            data["client_ids"] = get_ids(clients)
+        if projects is not None:
+            data["project_ids"] = get_ids(projects)
+        if tasks is not None:
+            data["task_ids"] = get_ids(tasks)
+        if tags is not None:
+            data["tag_ids"] = get_ids(tags)
+        if users is not None:
+            data["user_ids"] = get_ids(users)
+        if time_entries is not None:
+            data["time_entry_ids"] = get_ids(time_entries)
+        if description is not None:
+            data["description"] = description
+        if rounding is not None:
+            data["rounding"] = rounding
+
+        if order_by is not None:
+            data["order_by"] = order_by
+        if order_direction is not None:
+            data["order_direction"] = order_direction.upper()
 
         return url, data
 
@@ -744,14 +798,18 @@ class TimeEntrySet(base.WorkspacedTogglSet):
             yield entity
 
     def all_from_reports(self, start=None, stop=None, workspace=None, config=None):  # type: (typing.Optional[datetime_type], typing.Optional[datetime_type], typing.Union[str, int, Workspace], typing.Optional[utils.Config]) -> typing.Generator[TimeEntry, None, None]
+        return self.report_detailed(start=start, stop=stop, workspace=workspace, config=config)
+
+    def report_detailed(self, start=None, stop=None, workspace=None, config=None, **conditions):  # type: (typing.Optional[datetime_type], typing.Optional[datetime_type], typing.Union[str, int, Workspace], typing.Optional[utils.Config], typing.Any) -> typing.Generator[TimeEntry, None, None]
         """
-        Method that implements fetching of all time entries through Report API.
+        Method that implements fetching of time entries through Report API.
         No limitation on number of time entries.
 
         :param start: From when time entries should be fetched. Defaults to today - 6 days.
         :param stop: Until when time entries should be fetched. Defaults to today, unless since is in future or more than year ago, in this case until is since + 6 days.
         :param workspace: Workspace from where should be the time entries fetched from. Defaults to Config.default_workspace.
-        :param config:
+        :param config: Config instance. Defaults to Config.factory().
+        :param conditions: Additional filters that should be applied to fetching the time entries.
         :return: Generator that yields TimeEntry
         """
         from .. import toggl
@@ -778,7 +836,7 @@ class TimeEntrySet(base.WorkspacedTogglSet):
                 wid = config.default_workspace.id
 
         while True:
-            url, data = self._prepare_reports_request(start, stop, first_row_number, wid)
+            url, data = self._prepare_reports_request(start, stop, first_row_number, wid, **conditions)
             response = utils.toggl_request(url, 'post', data=json.dumps(data), config=config, address=toggl.REPORTS_URL)
             results = response.json()
 

@@ -182,8 +182,8 @@ def entry_add(ctx, start, stop, descr, **kwargs):
 
 def get_entries(ctx, use_reports, **conditions):
     if use_reports:
-        entities = api.TimeEntry.objects.all_from_reports(config=ctx.obj['config'],
-                                                          start=conditions.get('start'), stop=conditions.get('stop'))
+        entities = api.TimeEntry.objects.report_detailed(config=ctx.obj['config'],
+                                                         start=conditions.get('start'), stop=conditions.get('stop'))
     else:
         conditions = {key: condition for key, condition in conditions.items() if condition is not None}
         if conditions:
