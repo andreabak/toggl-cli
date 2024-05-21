@@ -645,10 +645,13 @@ def set_duration(name, instance, value, init=False):  # type: (str, base.Entity,
     return True  # Any change will result in updated instance's state.
 
 
-def format_duration(value, config=None):  # type: (int, utils.Config) -> str
+def format_duration(value, config=None):  # type: (typing.Optional[int], utils.Config) -> typing.Optional[str]
     """
     Formatting the duration into HOURS:MINUTES:SECOND format.
     """
+    if value is None:
+        return None
+
     if value < 0:
         config = config or utils.Config.factory()
         value = pendulum.now(tz=config.tz).int_timestamp + value
@@ -710,36 +713,35 @@ class TimeEntrySet(base.WorkspacedTogglSet):
 
         return self.entity_cls.deserialize(config=config, **fetched_entity)
 
-    def _build_reports_url(self, start, stop, page, wid):
-        url = '/details?user_agent=toggl_cli&workspace_id={}&page={}'.format(wid, page)
+    def _prepare_reports_request(self, start, stop, first_row_number, wid):  # type: (datetime.datetime, datetime.datetime, int, int) -> (str, typing.Dict[str, typing.Any])
+        url = f'/workspace/{wid}/search/time_entries'
 
-        if start is not None:
-            url += '&since={}'.format(quote_plus(start.isoformat()))
-
-        if stop is not None:
-            url += '&until={}'.format(quote_plus(stop.isoformat()))
-
-        return url
-
-    def _should_fetch_more(self, page, returned):  # type: (int, typing.Dict) -> bool
-        return page * returned['per_page'] < returned['total_count']
-
-    def _deserialize_from_reports(self, config, entity_dict, wid):
-        entity = {
-            'id': entity_dict['id'],
-            'start': entity_dict['start'],
-            'stop': entity_dict['end'],
-            'duration': entity_dict['dur'] / 1000,
-            'description': entity_dict['description'],
-            'tags': entity_dict['tags'],
-            'pid': entity_dict['pid'],
-            'tid': entity_dict['tid'],
-            'uid': entity_dict['uid'],
-            'wid': wid,
-            'billable': entity_dict['billable'],
+        data = {
+            "first_row_number": first_row_number or None,
         }
+        if start is not None:
+            data['start_date'] = start.date().isoformat()
+        if stop is not None:
+            data['end_date'] = stop.date().isoformat()
 
-        return self.entity_cls.deserialize(config=config, **entity)
+        return url, data
+
+    def _generate_from_reports(self, config, group_dict, wid):  # type: (utils.Config, dict, int) -> typing.Iterator[TimeEntry]
+        group_keys = {"description", "project_id", "task_id", "user_id", "tags_ids", "billable"}
+        common_values = {
+            "workspace_id": wid,
+            **dict(filter(lambda kv: kv[0] in group_keys, group_dict.items()))
+        }
+        for entity in group_dict["time_entries"]:
+            entity_values = {
+                **common_values,
+                "id": entity["id"],
+                "start": entity["start"],
+                "stop": entity["stop"],
+            }
+            entity = self.entity_cls.deserialize(config=config, **entity_values)
+            entity.duration = get_duration("duration", entity)
+            yield entity
 
     def all_from_reports(self, start=None, stop=None, workspace=None, config=None):  # type: (typing.Optional[datetime_type], typing.Optional[datetime_type], typing.Union[str, int, Workspace], typing.Optional[utils.Config]) -> typing.Generator[TimeEntry, None, None]
         """
@@ -754,8 +756,13 @@ class TimeEntrySet(base.WorkspacedTogglSet):
         """
         from .. import toggl
 
+        if start is None:
+            start = (pendulum.now() - pendulum.duration(days=6)).start_of("day")
+        if stop is None:
+            stop = (start + pendulum.duration(days=7)).end_of("day")
+
         config = config or utils.Config.factory()
-        page = 1
+        first_row_number = 1
 
         if workspace is None:
             wid = config.default_workspace.id
@@ -771,19 +778,20 @@ class TimeEntrySet(base.WorkspacedTogglSet):
                 wid = config.default_workspace.id
 
         while True:
-            url = self._build_reports_url(start, stop, page, wid)
-            returned = utils.toggl(url, 'get', config=config, address=toggl.REPORTS_URL)
+            url, data = self._prepare_reports_request(start, stop, first_row_number, wid)
+            response = utils.toggl_request(url, 'post', data=json.dumps(data), config=config, address=toggl.REPORTS_URL)
+            results = response.json()
 
-            if not returned.get('data'):
+            if not results:
                 return
 
-            for entity in returned.get('data'):
-                yield self._deserialize_from_reports(config, entity, wid)
+            for group in results:
+                yield from self._generate_from_reports(config, group, wid)
 
-            if not self._should_fetch_more(page, returned):
+            next_row_number = int(response.headers.get('X-Next-Row-Number', 0))
+            if not next_row_number or next_row_number == first_row_number:
                 return
-
-            page += 1
+            first_row_number = next_row_number
 
 
 class TimeEntry(WorkspacedEntity):
@@ -799,7 +807,7 @@ class TimeEntry(WorkspacedEntity):
     Project to which the Time entry is linked to.
     """
 
-    task = fields.MappingField(Task, 'tid', premium=True)
+    task = fields.MappingField(Task, 'task_id', premium=True)
     """
     Task to which the Time entry is linked to.
 
@@ -832,6 +840,11 @@ class TimeEntry(WorkspacedEntity):
     calculated as current_time + duration, where current_time is the current time in seconds since epoch.
     """
 
+    is_running = fields.BooleanField(default=False)
+    """
+    Whether the time entry is currently running.
+    """
+
     created_with = fields.StringField(required=True, default='TogglCLI', read=False)
     """
     Information who created the time entry.
@@ -841,6 +854,8 @@ class TimeEntry(WorkspacedEntity):
     """
     Set of tags associated with the time entry.
     """
+
+    # TODO: tags_ids
 
     objects = TimeEntrySet()
 

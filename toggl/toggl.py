@@ -3,7 +3,7 @@ import sys
 from toggl import cli
 
 TOGGL_URL = "https://api.track.toggl.com/api/v9"
-REPORTS_URL = "https://api.track.toggl.com/reports/api/v2"
+REPORTS_URL = "https://api.track.toggl.com/reports/api/v3"
 WEB_CLIENT_ADDRESS = "https://track.toggl.com/"
 
 

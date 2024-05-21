@@ -126,7 +126,7 @@ def handle_error(response):
     )
 
 
-def _toggl_request(url, method, data, headers, auth):
+def _http_request(url, method, data, headers, auth):
     logger.info('Sending {} to \'{}\' data: {}'.format(method.upper(), url, json.dumps(data)))
     if method == 'delete':
         response = requests.delete(url, auth=auth, data=data, headers=headers)
@@ -145,9 +145,9 @@ def _toggl_request(url, method, data, headers, auth):
     return response
 
 
-def toggl(url, method, data=None, headers=None, config=None, address=None):
+def toggl_request(url, method, data=None, headers=None, config=None, address=None):
     """
-    Makes an HTTP request to toggl.com. Returns the parsed JSON as dict.
+    Makes an HTTP request to toggl.com. Returns the response object.
     """
     from ..toggl import TOGGL_URL
 
@@ -159,16 +159,14 @@ def toggl(url, method, data=None, headers=None, config=None, address=None):
 
     url = "{}{}".format(address or TOGGL_URL, url)
 
-    tries = config.retries if config.retries and config.retries > 1 else 1  # There needs to be at least one try!
+    tries = max(config.retries or 1, 1)  # There needs to be at least one try!
 
     exception = None
     for _ in range(tries):
         try:
             logger.debug('Default workspace: {}'.format(config._default_workspace))
-            response = _toggl_request(url, method, data, headers, config.get_auth())
-            response_json = response.json() if response.text else None
-            logger.debug('Response {}:\n{}'.format(response.status_code, pformat(response_json)))
-            return response_json
+            response = _http_request(url, method, data, headers, config.get_auth())
+            return response
         except (exceptions.TogglThrottlingException, requests.exceptions.ConnectionError) as e:
             sleep(0.1)  # Lets give Toggl API some time to recover
             exception = e
@@ -176,3 +174,13 @@ def toggl(url, method, data=None, headers=None, config=None, address=None):
 
     # If retries failed then 'e' contains the last Exception/Error, lets re-raise it!
     raise exception
+
+
+def toggl(url, method, data=None, headers=None, config=None, address=None):
+    """
+    Makes an HTTP request to toggl.com. Returns the parsed JSON as dict.
+    """
+    response = toggl_request(url, method, data=data, headers=headers, config=config, address=address)
+    response_json = response.json() if response.text else None
+    logger.debug('Response {}:\n{}'.format(response.status_code, pformat(response_json)))
+    return response_json
